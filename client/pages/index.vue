@@ -381,15 +381,28 @@ onBeforeUnmount(() => {
 <style scoped lang="scss">
 /* ============ 应用容器 ============ */
 .ml-app {
-  position: absolute;
+  /* 固定定位：不能依赖 body / #app 的百分比高度——控制台里任一插件的全局样式
+     （如 chatluna-sandbox 的 `html,body,#app{min-height:100%}`）都会把它压成 0，
+     整个界面就此不可见。同时对齐控制台内容区，避开左侧活动栏与底部状态栏。 */
+  position: fixed;
   top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
+  left: var(--activity-width, 4rem);
+  right: 0;
+  bottom: var(--footer-height, 1.75rem);
+  width: auto;
+  height: auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   z-index: 0;
+}
+
+/* 控制台在窄屏隐藏状态栏，这里同步收回底部留白 */
+@media screen and (max-width: 768px) {
+  .ml-app {
+    bottom: 0;
+  }
 }
 
 /* ============ 顶部导航栏 ============ */
