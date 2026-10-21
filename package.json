@@ -23,8 +23,7 @@
   "files": [
     "lib",
     "dist",
-    "client",
-    "skills"
+    "client"
   ],
   "license": "MIT",
   "scripts": {

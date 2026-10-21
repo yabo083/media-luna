@@ -38,7 +38,6 @@ Media Luna 采用完全插件化的架构，所有功能（包括内置功能）
 | `connector-sd-webui` | 连接器 | Stable Diffusion WebUI |
 | `connector-flux` | 连接器 | Flux API |
 | `connector-chat-api` | 连接器 | 通用 Chat API |
-| `connector-novelai` | 连接器 | NovelAI 官方 API（V5 / V4.5 / V4）；另带 `novelai-directives`（提示词内中文指令 + Anlas 预告）与 `novelai-result-info`（种子回执）两个中间件 |
 
 ## 目录结构
 
@@ -92,7 +91,6 @@ src/
 │   ├── connector-dalle/     # DALL-E 连接器
 │   ├── connector-sd-webui/  # SD WebUI 连接器
 │   ├── connector-flux/      # Flux 连接器
-│   ├── connector-novelai/   # NovelAI 连接器（V5/V4.5/V4 + 文本指令中间件）
 │   └── connector-chat-api/  # Chat API 连接器
 │
 client/                      # 前端 (Vue)
