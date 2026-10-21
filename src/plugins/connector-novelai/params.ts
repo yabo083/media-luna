@@ -17,7 +17,6 @@ import {
   OFFICIAL_API_URL,
   OPUS_FREE_MAX_PIXELS,
   OPUS_FREE_MAX_STEPS,
-  RELAY_API_URL,
   SIZE_STEP,
   UC_PRESETS,
   VIBE_ENCODE_COST,
@@ -27,7 +26,6 @@ import {
   normalizeSampler,
   type NovelAIModelProfile,
   type ConfirmMode,
-  type PricingMode,
   type ReferenceMode
 } from './config'
 
@@ -65,10 +63,9 @@ export interface NovelAIParams {
   referenceMode: ReferenceMode
   referenceStrength: number
   referenceFidelity: number
-  pricing: PricingMode
   /** 出图用透明背景（仅 V5 系支持，实际是否下发还看 profile.straightAlpha） */
   transparent: boolean
-  /** 生成前是否先估价等确认：relay（仅中转）/ always / off */
+  /** 生成前是否先估价再确认（on / off） */
   confirmBefore: ConfirmMode
   characters: NovelAICharacterRow[]
   showAnlasCost: boolean
@@ -202,12 +199,9 @@ export function resolveParams(
   const rawConfirmMode = read('confirmBefore')
   // 开关式：只有显式 off 才是模式 1；旧值 relay / always 都归一到「要确认」
   const confirmBefore: ConfirmMode = rawConfirmMode === 'off' ? 'off' : 'on'
-  const pricing: PricingMode = read('pricing') === 'relay' ? 'relay' : 'novelai'
-  // 接入配置 1（第三方中转）没另填地址时按 windislands.com 处理；填了别的地址就尊重填的
+  // 端点由配置决定，不预置任何站点；留空走官方
   const configuredUrl = String(config.apiUrl || '').replace(/\/+$/, '')
-  const apiUrl = pricing === 'relay' && (!configuredUrl || configuredUrl === OFFICIAL_API_URL)
-    ? RELAY_API_URL
-    : configuredUrl || OFFICIAL_API_URL
+  const apiUrl = configuredUrl || OFFICIAL_API_URL
 
   return {
     apiUrl,
@@ -231,7 +225,6 @@ export function resolveParams(
     referenceMode,
     referenceStrength: clampNumber(read('referenceStrength'), 0, 1, 0.6),
     referenceFidelity: clampNumber(read('referenceFidelity'), 0, 1, 1),
-    pricing,
     transparent: read('transparent') === true,
     confirmBefore,
     characters: normalizeCharacters(parameters.characterPrompts ?? config.characters),

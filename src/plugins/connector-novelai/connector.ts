@@ -449,16 +449,15 @@ function buildAssets(
   images: FileData[],
   characters: NovelAICharacterRow[]
 ): OutputAsset[] {
-  const anlas = params.pricing === 'novelai'
-    ? estimateAnlas({
-      width: params.width,
-      height: params.height,
-      steps: params.steps,
-      profile: params.profile,
-      vibeImages: params.referenceMode === 'vibe' ? images.length : 0,
-      characterReferenceImages: params.referenceMode === 'character' ? images.length : 0
-    })
-    : null
+  // 本地 Anlas 估算只进任务记录；真实积分以端点的计费接口为准（读不到就不报）
+  const anlas = estimateAnlas({
+    width: params.width,
+    height: params.height,
+    steps: params.steps,
+    profile: params.profile,
+    vibeImages: params.referenceMode === 'vibe' ? images.length : 0,
+    characterReferenceImages: params.referenceMode === 'character' ? images.length : 0
+  })
 
   const meta = {
     model: params.model,
@@ -469,10 +468,10 @@ function buildAssets(
     sampler: params.sampler,
     ucPreset: params.ucPreset,
     seed,
-    anlas: anlas?.total,
-    anlasPerImage: anlas?.perImage,
-    opusFreeBand: anlas?.freeBand,
-    pricing: params.pricing,
+    anlas: anlas.total,
+    anlasPerImage: anlas.perImage,
+    opusFreeBand: anlas.freeBand,
+    endpoint: params.apiUrl,
     referenceMode: params.referenceMode,
     referenceCount: images.length,
     characterCount: characters.length
@@ -502,7 +501,7 @@ function buildAssets(
 export const NovelAIConnector: ConnectorDefinition = {
   id: 'novelai',
   name: 'NovelAI',
-  description: 'NovelAI 官方 API（V5 / V4.5 / V4），支持多角色位置控制与 Anlas 预估',
+  description: 'NovelAI API（V5 / V4.5 / V4，官方与 NAI 兼容端点），支持多角色位置控制与 Anlas 预估',
   icon: 'novelai',
   supportedTypes: ['image'],
   fields: connectorFields,
@@ -515,16 +514,14 @@ export const NovelAIConnector: ConnectorDefinition = {
     const params = resolveParams(config, parameters)
     const images = files.filter(isImage)
     const characters = clampCharacters(params.characters, params.profile)
-    const anlas = params.pricing === 'novelai'
-      ? estimateAnlas({
-        width: params.width,
-        height: params.height,
-        steps: params.steps,
-        profile: params.profile,
-        vibeImages: params.referenceMode === 'vibe' ? images.length : 0,
-        characterReferenceImages: params.referenceMode === 'character' ? images.length : 0
-      })
-      : null
+    const anlas = estimateAnlas({
+      width: params.width,
+      height: params.height,
+      steps: params.steps,
+      profile: params.profile,
+      vibeImages: params.referenceMode === 'vibe' ? images.length : 0,
+      characterReferenceImages: params.referenceMode === 'character' ? images.length : 0
+    })
 
     return {
       endpoint: params.apiUrl,
@@ -540,11 +537,11 @@ export const NovelAIConnector: ConnectorDefinition = {
         noiseSchedule: params.noiseSchedule,
         ucPreset: params.ucPreset,
         seed: params.seed >= 0 ? params.seed : '随机',
-        pricing: params.pricing,
         referenceMode: params.referenceMode,
         referenceCount: images.length,
         characterCount: characters.length,
-        ...(anlas ? { estimatedAnlas: anlas.total, opusFreeBand: anlas.freeBand } : {})
+        estimatedAnlas: anlas.total,
+        opusFreeBand: anlas.freeBand
       }
     }
   },

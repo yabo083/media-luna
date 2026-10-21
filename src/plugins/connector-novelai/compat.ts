@@ -1,9 +1,10 @@
-// 第三方 NAI 中转的自述接口：GET {apiUrl}/api/connection（Bearer mj_ 开头的 Key）
+// 可选的计费扩展端点（不绑定任何站点）：
+//   GET  {apiUrl}/api/connection  余额 / 本模型单价 / 受理状态
+//   POST {apiUrl}/api/billing     整单报价（含参考图附加费）
 //
-// 为什么直接读这个端点：官方 NovelAI 没有它（404），而中转把它当作「免费健康检查」——
-// 响应里带 credits（积分余额）、按模型的 price（每张积分价）与 service.paused（受理状态），
-// 官方侧未知、只能本地按 Anlas 公式估算的东西，在中转侧这里能拿到真值。
-// 于是「计费口径 = 第三方中转」不再是不透明的：余额、单价、是否受理都能照官方那样回显。
+// 官方 NovelAI 没有这两个端点（404），所以它们只是「能力探测」：探到就用真值，
+// 探不到就把计费展示降级为本地 Anlas 估算（官方端点）或直接不报价（未知端点）。
+// 任何 NAI 兼容服务只要实现同一形状就自动生效，代码里不出现站点名与默认域名。
 //
 // 响应是外部数据，因此逐字段用 `in` + typeof 检查后再用；形状不对就降级成 ok:false，
 // 生成链路绝不能因为查余额而中断。
@@ -12,29 +13,32 @@ import { createHash } from 'node:crypto'
 import type { Context } from 'koishi'
 import type { NovelAIParams } from './params'
 
-/** 中转账户快照 */
-export interface RelayAccount {
+/** 计费账户快照 */
+export interface CompatAccount {
   /** 剩余积分 */
   credits: number
-  /** 当前模型在中转侧的单价（积分/张）；中转没列该模型时缺省 */
+  /** 当前模型在该端点的单价（积分/张）；端点未列该模型时缺省 */
   price?: number
   modelName?: string
-  /** 站方是否可受理 */
+  /** 端点是否可受理 */
   ready: boolean
   paused: boolean
-  /** 暂停原因（站方原文） */
+  /** 暂停原因（服务原文） */
   reason: string
-  /** 站方附带的说明（例如「此检查未生成图片、未扣积分」） */
+  /** 服务附带的说明（例如「此检查未生成图片、未扣积分」） */
   message: string
 }
 
-export type RelayAccountResult =
-  | { ok: true, account: RelayAccount }
+export type CompatAccountResult =
+  | { ok: true, account: CompatAccount }
   | { ok: false, error: string }
 
-/** 回执里分钟级就够；同时避免每条消息都打一次站方接口 */
+/** 回执里分钟级就够；同时避免每条消息都打一次该端点 */
 const CACHE_TTL = 60_000
-const cache = new Map<string, { at: number, result: RelayAccountResult }>()
+
+/** 探测超时：计费接口只是增强，不能占用生成请求的完整超时 */
+const PROBE_TIMEOUT_MS = 5_000
+const cache = new Map<string, { at: number, result: CompatAccountResult }>()
 
 /** 缓存键：账号 + 模型的组合指纹（不落 Key 原文） */
 function cacheKey(params: NovelAIParams): string {
@@ -42,7 +46,7 @@ function cacheKey(params: NovelAIParams): string {
   return `${digest}|${params.model}`
 }
 
-/** 读站方说明文字（错误体形如 {"error":"中文原因"}） */
+/** 读服务说明文字（错误体形如 {"error":"中文原因"}） */
 function readMessage(payload: unknown): string {
   if (typeof payload !== 'object' || payload === null) return ''
   const candidates = [
@@ -80,7 +84,7 @@ function readNumber(source: Record<string, unknown>, key: string): number | unde
   return undefined
 }
 
-/** 站方模型价格条目（只取用得上的三列） */
+/** 端点模型价格条目（只取用得上的三列） */
 function readModels(source: unknown): Array<{ id: string, name?: string, price?: number }> {
   if (!Array.isArray(source)) return []
   const rows: Array<{ id: string, name?: string, price?: number }> = []
@@ -96,9 +100,9 @@ function readModels(source: unknown): Array<{ id: string, name?: string, price?:
   return rows
 }
 
-function parseAccount(params: NovelAIParams, payload: unknown): RelayAccountResult {
+function parseAccount(params: NovelAIParams, payload: unknown): CompatAccountResult {
   if (typeof payload !== 'object' || payload === null) return { ok: false, error: '响应不是 JSON 对象' }
-  if (!('ok' in payload) || payload.ok !== true) return { ok: false, error: readMessage(payload) || '站方未确认 Key' }
+  if (!('ok' in payload) || payload.ok !== true) return { ok: false, error: readMessage(payload) || '端点未确认 Key' }
 
   const credits = readNumber(payload as Record<string, unknown>, 'credits')
   if (credits === undefined) return { ok: false, error: '响应里没有积分余额' }
@@ -124,14 +128,14 @@ function parseAccount(params: NovelAIParams, payload: unknown): RelayAccountResu
 }
 
 /**
- * 读取中转账户：余额 / 本模型单价 / 受理状态。
+ * 读取计费账户：余额 / 本模型单价 / 受理状态。
  * `fresh` 用来在生成后拿到最新余额（绕过缓存）。
  */
-export async function fetchRelayAccount(
+export async function fetchCompatAccount(
   ctx: Context,
   params: NovelAIParams,
   options: { fresh?: boolean } = {}
-): Promise<RelayAccountResult> {
+): Promise<CompatAccountResult> {
   if (!params.apiUrl || !params.apiToken) return { ok: false, error: '缺少 API 地址或 Key' }
   // http 服务没加载时不要让内部英文报错冒到聊天里
   if (typeof ctx.http?.get !== 'function') return { ok: false, error: 'Koishi 的 HTTP 服务不可用' }
@@ -140,11 +144,11 @@ export async function fetchRelayAccount(
   const cached = cache.get(key)
   if (!options.fresh && cached && Date.now() - cached.at < CACHE_TTL) return cached.result
 
-  let result: RelayAccountResult
+  let result: CompatAccountResult
   try {
     const payload = await ctx.http.get(`${params.apiUrl}/api/connection`, {
       headers: { Authorization: `Bearer ${params.apiToken}`, Referer: 'https://novelai.net/' },
-      timeout: params.timeout * 1000,
+      timeout: Math.min(params.timeout * 1000, PROBE_TIMEOUT_MS),
       responseType: 'json'
     })
     result = parseAccount(params, payload)
@@ -156,23 +160,13 @@ export async function fetchRelayAccount(
   return result
 }
 
-/** 回显：余 1088 积分 · 本张约 1 积分（NovelAI V4.5 Full） */
-export function describeRelayAccount(account: RelayAccount): string {
-  const parts = [`余 ${account.credits} 积分`]
-  if (account.price !== undefined) {
-    const name = account.modelName ? `（${account.modelName}）` : ''
-    parts.push(`本张约 ${account.price} 积分${name}`)
-  }
-  return parts.join(' · ')
-}
-
 /** 生成前的风险提示：暂停受理 / 不可用 / 余额不足；没有风险时返回 null */
-export function describeRelayRisk(account: RelayAccount): string | null {
+export function describeCompatRisk(account: CompatAccount): string | null {
   if (account.paused) {
-    return `中转站已暂停受理${account.reason ? `：${account.reason}` : ''}`
+    return `端点已暂停受理${account.reason ? `：${account.reason}` : ''}`
   }
   if (!account.ready) {
-    return '中转站当前不可用（排队或通道下线）'
+    return '端点当前不可用（排队或通道下线）'
   }
   if (account.price !== undefined && account.credits < account.price) {
     return `积分可能不足（余 ${account.credits} / 本张约 ${account.price}）`
@@ -181,7 +175,7 @@ export function describeRelayRisk(account: RelayAccount): string | null {
 }
 
 /** 生成后回执：本次消耗 + 最新余额（两次快照都有才报消耗） */
-export function describeRelaySpend(beforeCredits: number | null, after: RelayAccount): string {
+export function describeCompatSpend(beforeCredits: number | null, after: CompatAccount): string {
   const parts: string[] = []
   if (beforeCredits !== null && beforeCredits >= after.credits) {
     parts.push(`消耗 ${beforeCredits - after.credits} 积分`)
@@ -192,8 +186,8 @@ export function describeRelaySpend(beforeCredits: number | null, after: RelayAcc
 
 /**
  * 整单报价：`POST /api/billing {params}` → `{cost, unitCost, totalCost, count, quoteToken, …}`。
- * 站方网页端每次改参数都会调它（250ms 防抖），所以它是「含参考附加费的整单价」的权威来源。
- * 站长已对 API Key 开放该端点；失败（含尚未开放某种组合）时返回 null，由调用方降级成基础价说明。
+ * 该端点的网页端每次改参数都会调它（250ms 防抖），所以它是「含参考附加费的整单价」的权威来源。
+ * 端点对 API Key 开放时用它；失败（含尚未开放某种组合）时返回 null，由调用方降级成基础价说明。
  */
 export interface BillingQuote {
   cost: number
@@ -201,7 +195,7 @@ export interface BillingQuote {
   validUntil?: number
 }
 
-/** 组装站方报价要的 params（形状取自网页端 zod schema；参考数量按张数展开） */
+/** 组装报价请求要的 params（形状取自网页端 zod schema；参考数量按张数展开） */
 function billingParams(params: NovelAIParams, images: number, prompt: string): Record<string, unknown> {
   const references = params.referenceMode === 'off' ? 0 : images
   return {
@@ -250,7 +244,7 @@ export async function fetchBillingQuote(
       params: billingParams(params, images, prompt)
     }, {
       headers: { Authorization: `Bearer ${params.apiToken}`, Referer: 'https://novelai.net/' },
-      timeout: params.timeout * 1000,
+      timeout: Math.min(params.timeout * 1000, PROBE_TIMEOUT_MS),
       responseType: 'json'
     })
     const cost = readNumber(payload as Record<string, unknown>, 'cost')

@@ -11,7 +11,7 @@ import { parseCharacterFlags, parseChatDirectives, stickySubset } from './chat-p
 import { NovelAIChatState, chatStateKey, type ChatStateScope } from './chat-state'
 import { applyChatOverrides, describeEffective, describeOverrides } from './chat-view'
 import { resolveSizeText, resolveParams } from './params'
-import { describeRelaySpend, fetchRelayAccount } from './relay'
+import { describeCompatSpend, fetchCompatAccount } from './compat'
 import { describeEstimate } from './control'
 
 function readScope(mctx: MiddlewareContext): ChatStateScope | null {
@@ -153,16 +153,14 @@ export function createNovelAIDirectivesMiddleware(): MiddlewareDefinition {
           mctx.addUserHint(`${effective} · ${estimate[1]}`, 'before')
           for (const line of estimate.slice(2)) mctx.addUserHint(line, 'before')
         }
-        if (params.pricing === 'relay') {
-          // 命中 60 秒缓存：这里只是把余额留给生成后回执做差值
-          const relay = await fetchRelayAccount(mctx.ctx, params)
-          if (relay.ok) {
-            mctx.setMiddlewareLog('novelai-relay', {
-              credits: relay.account.credits,
-              price: relay.account.price ?? null,
-              model: params.model
-            })
-          }
+        // 计费扩展是可选能力：命中 60 秒缓存，只是把余额留给生成后回执做差值
+        const account = await fetchCompatAccount(mctx.ctx, params)
+        if (account.ok) {
+          mctx.setMiddlewareLog('novelai-compat', {
+            credits: account.account.credits,
+            price: account.account.price ?? null,
+            model: params.model
+          })
         }
       }
 
@@ -193,14 +191,14 @@ export function createNovelAIResultInfoMiddleware(): MiddlewareDefinition {
         mctx.addUserHint(parts.join(' · '), 'after')
       }
 
-      // 中转：生成后取最新余额，并对照生成前的快照报出本次消耗
+      // 生成后取最新余额，对照生成前的快照报出本次消耗；没有快照（端点无计费接口）就整段跳过
       const params = resolveParams(mctx.channel.connectorConfig, mctx.parameters)
-      if (params.pricing === 'relay' && params.showAnlasCost) {
-        const relay = await fetchRelayAccount(mctx.ctx, params, { fresh: true })
-        if (relay.ok) {
-          const logged = mctx.getMiddlewareLogs()['novelai-relay']
-          const before = logged && typeof logged.credits === 'number' ? logged.credits : null
-          mctx.addUserHint(describeRelaySpend(before, relay.account), 'after')
+      if (params.showAnlasCost) {
+        const logged = mctx.getMiddlewareLogs()['novelai-compat']
+        const before = logged && typeof logged.credits === 'number' ? logged.credits : null
+        if (before !== null) {
+          const account = await fetchCompatAccount(mctx.ctx, params, { fresh: true })
+          if (account.ok) mctx.addUserHint(describeCompatSpend(before, account.account), 'after')
         }
       }
 

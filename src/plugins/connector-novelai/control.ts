@@ -12,7 +12,7 @@ import { applyOptionOverrides, isControlWord, parseChatDirectives, stickySubset,
 import { chatStateKey, NovelAIChatState } from './chat-state'
 import { applyChatOverrides, describeEffective, describeOverrides } from './chat-view'
 import { describeAnlas, estimateAnlas, resolveParams } from './params'
-import { describeRelayRisk, fetchBillingQuote, fetchRelayAccount } from './relay'
+import { describeCompatRisk, fetchBillingQuote, fetchCompatAccount } from './compat'
 
 /** 拦截器需要的最小 media-luna 能力（结构类型，不 import 服务类） */
 export interface ControlChannel {
@@ -45,9 +45,11 @@ const USAGE = 'nai set ［参数］ 设为个人默认 · nai info 看当前值 
 
 /** 本渠道当前要点，帮助与查询共用 */
 function describeChannel(params: NovelAIParams, images: number): string {
-  const price = params.pricing === 'relay' ? '站方积分计费' : '官方 NovelAI（给 Anlas 估算）'
+  const host = (() => {
+    try { return new URL(params.apiUrl).host } catch { return params.apiUrl }
+  })()
   const confirm = params.confirmBefore === 'on' ? ' · 生成前需确认' : ''
-  return `${params.profile.label} · ${params.width}×${params.height} · ${price}${confirm}${images > 0 ? ` · 本次带 ${images} 张参考图` : ''}`
+  return `${params.profile.label} · ${params.width}×${params.height} · 端点 ${host}${confirm}${images > 0 ? ` · 本次带 ${images} 张参考图` : ''}`
 }
 
 /** `help` 的回执：用法 + 快捷词 + 参数 + 本渠道要点 */
@@ -126,8 +128,8 @@ async function findPreset(
 }
 
 /**
- * 计费依据 + 计费口径：`nai cost`、生成前确认与预生成提示共用同一份文案。
- * 优先用站方整单报价（含参考附加费）；它未对 Key 开放时，只报站方能给的真值，不自行推算。
+ * 计费依据 + 计费来源：`nai cost`、生成前确认与预生成提示共用同一份文案。
+ * 计费扩展是可选能力：端点实现了余额/报价接口就用真值，没实现就退回本地 Anlas 公式并标明来源。
  */
 export async function describeEstimate(ctx: Context, params: NovelAIParams, images: number, prompt = ''): Promise<string[]> {
   const references = images > 0 && params.referenceMode !== 'off'
@@ -135,7 +137,12 @@ export async function describeEstimate(ctx: Context, params: NovelAIParams, imag
     : ''
   const lines = [`${params.width}×${params.height} · 步数 ${params.steps}${references}`]
 
-  if (params.pricing !== 'relay') {
+  // 探测可选的计费扩展（余额 / 报价）；探不到就退回本地公式，不猜端点积分
+  const [account, quote] = await Promise.all([
+    fetchCompatAccount(ctx, params),
+    fetchBillingQuote(ctx, params, images, prompt)
+  ])
+  if (!account.ok) {
     const anlas = estimateAnlas({
       width: params.width,
       height: params.height,
@@ -144,31 +151,23 @@ export async function describeEstimate(ctx: Context, params: NovelAIParams, imag
       vibeImages: params.referenceMode === 'vibe' ? images : 0,
       characterReferenceImages: params.referenceMode === 'character' ? images : 0
     })
-    lines.push(describeAnlas(anlas) + (images > 0 ? `（按 ${images} 张参考图计）` : ''))
-    return lines
-  }
-
-  const [relay, quote] = await Promise.all([
-    fetchRelayAccount(ctx, params),
-    fetchBillingQuote(ctx, params, images, prompt)
-  ])
-  if (!relay.ok) {
-    lines.push(`该渠道按站点积分计费，未读到站方账户（${relay.error}）`)
+    lines.push(`本地估算：${describeAnlas(anlas)}${images > 0 ? `（按 ${images} 张参考图计）` : ''}`)
+    lines.push('该端点未提供计费接口，以上按官方 Anlas 公式估算')
     return lines
   }
 
   if (quote) {
-    lines.push(`预计消耗 ${quote.cost} 积分（站方报价）`)
+    lines.push(`预计消耗 ${quote.cost} 积分（端点报价）`)
   } else {
-    const price = relay.account.price
+    const price = account.account.price
     lines.push([
       price === undefined ? '基础价未知' : `基础 ${price} 积分/张`,
-      ...(images > 0 ? ['参考图附加费按站方结算'] : [])
+      ...(images > 0 ? ['参考图附加费按端点结算'] : [])
     ].join(' · '))
   }
 
-  lines.push(`余 ${relay.account.credits} 积分${relay.account.modelName ? `（${relay.account.modelName}）` : ''}`)
-  const risk = describeRelayRisk(relay.account)
+  lines.push(`余 ${account.account.credits} 积分${account.account.modelName ? `（${account.account.modelName}）` : ''}`)
+  const risk = describeCompatRisk(account.account)
   if (risk) lines.push(risk)
   return lines
 }

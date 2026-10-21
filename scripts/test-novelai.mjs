@@ -8,7 +8,7 @@
 // 用法：
 //   node scripts/test-novelai.mjs
 //   node scripts/test-novelai.mjs --token pst-xxxx --model nai-diffusion-5-full --prompt "1girl, solo"
-//   node scripts/test-novelai.mjs --base-url https://windislands.com --token mj_xxxx --model nai-diffusion-4-5-full --resolution 512x768 --steps 20
+//   node scripts/test-novelai.mjs --base-url https://your-endpoint.example --token <key> --model nai-diffusion-4-5-full --resolution 512x768 --steps 20
 //   node scripts/test-novelai.mjs --token pst-xxxx --references        # 额外跑氛围参考 / 角色参考
 //
 // 产物写到 external/media-luna/tmp/novelai-selftest/。
@@ -32,7 +32,7 @@ const loadBuilt = relativePath => import(pathToFileURL(join(projectDir, relative
 
 const { NovelAIConnector } = (await loadBuilt('lib/plugins/connector-novelai/connector.js')).default
 const { resolveParams, estimateAnlas } = (await loadBuilt('lib/plugins/connector-novelai/params.js')).default
-const relayModule = (await loadBuilt('lib/plugins/connector-novelai/relay.js')).default
+const compatModule = (await loadBuilt('lib/plugins/connector-novelai/compat.js')).default
 const middlewareModule = (await loadBuilt('lib/plugins/connector-novelai/middleware.js')).default
 
 /** 8x8 纯色 PNG，作为假服务返回的图片与参考图素材 */
@@ -57,7 +57,7 @@ async function main() {
 
   await checkDefaults()
   await checkAnlas()
-  await checkRelayRobustness()
+  await checkCompatRobustness()
   await checkChatLayer(baseUrl, token)
 
   if (live) {
@@ -89,12 +89,11 @@ async function checkDefaults() {
   assert(defaults.profile.paramsVersion === 4, `V5 的 params_version 应为 4，实际 ${defaults.profile.paramsVersion}`)
   assert(defaults.transparent === false, `透明通道默认应为关，实际 ${defaults.transparent}`)
   assert(defaults.confirmBefore === 'on', `生成前确认默认应为模式 2（要确认），实际 ${defaults.confirmBefore}`)
-  // 接入配置 1（第三方中转）：没另填地址时按 windislands.com 处理，填了别的地址就尊重
-  assert(resolveParams({ model: 'nai-diffusion-5-full', pricing: 'relay' }).apiUrl === 'https://windislands.com',
-    `配置 1 未填地址时应落到 windislands.com，实际 ${resolveParams({ model: 'nai-diffusion-5-full', pricing: 'relay' }).apiUrl}`)
-  assert(resolveParams({ model: 'nai-diffusion-5-full', pricing: 'relay', apiUrl: 'https://other.example/' }).apiUrl === 'https://other.example',
-    '配置 1 填了别的地址时应原样使用')
-  assert(resolveParams({ model: 'nai-diffusion-5-full' }).apiUrl === 'https://image.novelai.net', '配置 2 应走官方地址')
+  // 端点完全由配置决定，不预置任何站点：留空走官方，填了原样用（去掉尾部斜杠）
+  assert(resolveParams({ model: 'nai-diffusion-5-full' }).apiUrl === 'https://image.novelai.net',
+    `未填地址时应落到官方端点，实际 ${resolveParams({ model: 'nai-diffusion-5-full' }).apiUrl}`)
+  assert(resolveParams({ model: 'nai-diffusion-5-full', apiUrl: 'https://other.example/' }).apiUrl === 'https://other.example',
+    '填了别的地址时应原样使用')
   assert(resolveParams({ model: 'nai-diffusion-5-full', confirmBefore: 'relay' }).confirmBefore === 'on'
     && resolveParams({ model: 'nai-diffusion-5-full', confirmBefore: 'always' }).confirmBefore === 'on'
     && resolveParams({ model: 'nai-diffusion-5-full', confirmBefore: 'off' }).confirmBefore === 'off',
@@ -161,12 +160,12 @@ async function checkAnlas() {
   console.log('✓ Anlas 估算（与官网两个实测点吻合）')
 }
 
-/** 2.5 中转账户解析的健壮性与生成后回执（不联网、不消耗） */
-async function checkRelayRobustness() {
+/** 2.5 可选计费接口的解析健壮性与生成后回执（不联网、不消耗） */
+async function checkCompatRobustness() {
   let seq = 0
-  const probe = (payload) => relayModule.fetchRelayAccount(
+  const probe = (payload) => compatModule.fetchCompatAccount(
     { http: { get: async () => payload } },
-    { apiUrl: `http://relay-probe-${seq++}.invalid`, apiToken: 'mj_x', model: 'nai-diffusion-5-full', timeout: 5 }
+    { apiUrl: `http://relay-probe-${seq++}.invalid`, apiToken: 'test-key', model: 'nai-diffusion-5-full', timeout: 5 }
   )
 
   // Number(null)=0 / Number(true)=1 / Number('')=0 都能过 Number.isFinite，必须逐类型拒绝
@@ -184,7 +183,7 @@ async function checkRelayRobustness() {
   const priceNumber = await probe({ ok: true, credits: 5, models: [{ id: 'nai-diffusion-5-full', price: 2 }] })
   assert(priceNumber.ok && priceNumber.account.price === 2, '正常 price 应保留')
 
-  const noHttp = await relayModule.fetchRelayAccount({}, { apiUrl: 'http://x.invalid', apiToken: 'mj_x', model: 'nai-diffusion-5-full', timeout: 5 })
+  const noHttp = await compatModule.fetchCompatAccount({}, { apiUrl: 'http://x.invalid', apiToken: 'test-key', model: 'nai-diffusion-5-full', timeout: 5 })
   assert(!noHttp.ok && noHttp.error.includes('HTTP 服务不可用'), `缺少 http 服务应给人话，实际 ${JSON.stringify(noHttp)}`)
 
   // 生成后回执：用快照差报消耗，充值（余额上升）时不报消耗，关掉开关时整段静默
@@ -193,13 +192,13 @@ async function checkRelayRobustness() {
     const mctx = {
       channel: {
         connectorId: 'novelai',
-        connectorConfig: { apiUrl: 'http://receipt.invalid', apiToken: 'mj_x', model: 'nai-diffusion-4-5-full', pricing: 'relay', showAnlasCost }
+        connectorConfig: { apiUrl: 'http://receipt.invalid', apiToken: 'test-key', model: 'nai-diffusion-4-5-full', showAnlasCost }
       },
       parameters: {},
       output: [{ kind: 'image', meta: { seed: 7 } }],
       ctx: { http: { get: async () => ({ ok: true, credits: after, models: [] }) } },
       addUserHint: (text, phase) => hints.push(`${phase}:${text}`),
-      getMiddlewareLogs: () => ({ 'novelai-relay': { credits: before } })
+      getMiddlewareLogs: () => ({ 'novelai-compat': { credits: before } })
     }
     await middlewareModule.createNovelAIResultInfoMiddleware().execute(mctx, async () => 'success')
     return hints
@@ -219,7 +218,7 @@ async function checkRelayRobustness() {
     const mctx = {
       channel: {
         connectorId: 'novelai',
-        connectorConfig: { apiUrl: 'http://hint.invalid', apiToken: 'mj_x', model: 'nai-diffusion-4-5-full', pricing: 'relay', showAnlasCost: true }
+        connectorConfig: { apiUrl: 'http://hint.invalid', apiToken: 'test-key', model: 'nai-diffusion-4-5-full', showAnlasCost: true }
       },
       prompt: '1girl',
       parameters: {},
@@ -240,7 +239,7 @@ async function checkRelayRobustness() {
   const withoutQuote = await directiveHints(true)
   assert(withoutQuote.length === 1 && !withoutQuote[0].includes('积分'),
     `确认过价后只留生效参数、不重复计费行，实际 ${JSON.stringify(withoutQuote)}`)
-  console.log('✓ 中转账户解析健壮性（数值强转护栏、降级文案）与生成后消耗回执')
+  console.log('✓ 计费接口解析健壮性（数值强转护栏、降级文案）与生成后消耗回执')
 }
 
 /** 3.5 聊天指令解析与个人默认 */
@@ -318,9 +317,9 @@ async function checkChatLayer(baseUrl, token) {
     channels: { getByName: async name => (name === 'nai' ? channel : null) },
     presets: { getMatchingPresets: async () => [{ name: '二次元', parameterOverrides: { steps: 20 } }] }
   }
-  // 官方口径的控制消息不会打中转接口，这里给一个会抛错的 ctx：真被调用就立刻暴露
+  // 计费接口探测失败必须静默降级：这里给一个会抛错的 ctx，cost 之外的指令也不应被它拖垮
   const control = (text, options) => handleControl({
-    ctx: { http: { get: async () => { throw new Error('不应请求中转接口') } } },
+    ctx: { http: { get: async () => { throw new Error('计费接口不可用') } } },
     text,
     options,
     channel,
@@ -391,8 +390,8 @@ async function checkChatLayer(baseUrl, token) {
   assert(afterReload.steps === 33 && afterReload.scale === 6, `重新载入后个人默认应保留，实际 ${JSON.stringify(afterReload)}`)
   reloaded.dispose()
 
-  // 中转口径：余额与单价读站方自述接口（官方 404 时降级成「读不到」）
-  const relayChannel = { ...channel, connectorConfig: { ...channel.connectorConfig, pricing: 'relay' } }
+  // 端点口径：余额与单价读可选计费接口；没有该接口时退回本地估算
+  const relayChannel = { ...channel, connectorConfig: { ...channel.connectorConfig, apiUrl: 'https://compat.example' } }
   const relayPayload = {
     ok: true,
     credits: 1088,
@@ -407,15 +406,15 @@ async function checkChatLayer(baseUrl, token) {
   const relayQuery = await handleControl({ ctx: relayCtx, text: 'cost', channel: relayChannel, session, services, state: store })
   assert(relayQuery?.includes('余 1088 积分') && relayQuery.includes('基础 5 积分/张') && relayQuery.includes('（NovelAI V5 Full）')
     && !relayQuery.includes('预计消耗'),
-    `中转口径应回显余额与基础价而不是 Anlas，实际「${relayQuery}」`)
-  // 氛围参考编码有站方报价接口；精准参考没有（/api/billing 只认浏览器会话）
+    `端点口径应回显余额与基础价而不是 Anlas，实际「${relayQuery}」`)
+  // 氛围参考编码有报价接口；精准参考可能没有（取决于端点实现）
   const charCost = await handleControl({
     ctx: relayCtx, text: 'cost 角色 0.8', channel: relayChannel,
     session: { platform: 'onebot', channelId: '1000', userId: '42', event: { message: { elements: [{ type: 'img' }] } } },
     services, state: store
   })
-  assert(charCost?.includes('参考图附加费按站方结算'), `参考图应标明附加费口径，实际「${charCost}」`)
-  // 站方整单报价（POST /api/billing）：开放给 Key 后直接用它，不自行推算。
+  assert(charCost?.includes('参考图附加费按端点结算'), `参考图应标明附加费口径，实际「${charCost}」`)
+  // 整单报价（POST /api/billing）：端点提供时直接用它，不自行推算。
   // 必须先测成功路径：报价接口一旦失败会进 5 分钟负缓存，后面的用例就走降级了。
   const quotaCtx = {
     http: {
@@ -433,8 +432,8 @@ async function checkChatLayer(baseUrl, token) {
     session: { platform: 'onebot', channelId: '1000', userId: '42', event: { message: { elements: [{ type: 'img' }] } } },
     services, state: store
   })
-  assert(quotedCost?.includes('预计消耗 14 积分（站方报价）'), `有报价接口时应直接报站方价，实际「${quotedCost}」`)
-  // 报价拿不到（如站方尚未开放该组合）：只标基础价与附加费口径，不自己算
+  assert(quotedCost?.includes('预计消耗 14 积分（端点报价）'), `有报价接口时应直接报端点价，实际「${quotedCost}」`)
+  // 报价拿不到（端点未开放该组合）：只标基础价与附加费口径，不自己算
   const deniedCtx = {
     http: {
       get: async () => relayPayload,
@@ -448,14 +447,14 @@ async function checkChatLayer(baseUrl, token) {
     session: { platform: 'onebot', channelId: '1000', userId: '42', event: { message: { elements: [{ type: 'img' }] } } },
     services, state: store
   })
-  assert(deniedCost?.includes('基础 5 积分/张') && deniedCost.includes('参考图附加费按站方结算'),
+  assert(deniedCost?.includes('基础 5 积分/张') && deniedCost.includes('参考图附加费按端点结算'),
     `报价不可用时应只标口径、不编数字，实际「${deniedCost}」`)
   const relayInfo = await handleControl({
     ctx: { http: { get: () => { throw new Error('info 不应请求账户接口') } } },
     text: 'info', channel: relayChannel, session, services, state: store
   })
-  assert(relayInfo?.includes('【个人默认】') && !relayInfo.includes('积分') && !relayInfo.includes('【中转】'), '中转 info 只显示参数信息')
-  assert(!relayQuery.includes('【个人默认】') && !relayQuery.includes('【生效】'), '中转 cost 只显示计费信息')
+  assert(relayInfo?.includes('【个人默认】') && !relayInfo.includes('积分') && !relayInfo.includes('【中转】'), 'cost 之外的 info 只显示参数信息')
+  assert(!relayQuery.includes('【个人默认】') && !relayQuery.includes('【生效】'), 'cost 只显示计费信息')
   // 控制词本身不是预设名：存在同名预设（如叫 cost）时不得静默改掉查询的基准
   const trapPresets = { presets: { getMatchingPresets: async () => [{ name: 'cost', parameterOverrides: { steps: 50, resolution: '1024x1536' } }] } }
   for (const text of ['cost', 'info']) {
@@ -492,16 +491,17 @@ async function checkChatLayer(baseUrl, token) {
   const timedOut = await guard(guardRequest(confirmSession(undefined)))
   assert(timedOut?.includes('等待确认超时'), `没有回复应超时放弃，实际「${timedOut}」`)
 
-  // 官方渠道同样走模式 2：估价来自本地 Anlas 公式（官方 API 没有询价端点），不碰中转接口
-  const officialGuard = createNovelAIConfirmGuard(relayCtx, {
-    channels: { getByName: async () => ({ ...channel, connectorConfig: { ...channel.connectorConfig, pricing: 'novelai' } }) },
+  // 端点没有计费接口时退回本地 Anlas 公式（官方 API 本来就没有询价端点）
+  const noBillingCtx = { http: { get: async () => { throw new Error('HTTP 404') }, post: async () => { throw new Error('HTTP 404') } } }
+  const officialGuard = createNovelAIConfirmGuard(noBillingCtx, {
+    channels: { getByName: async () => ({ ...channel, connectorConfig: { ...channel.connectorConfig, apiUrl: 'https://no-billing.example' } }) },
     presets: services.presets
   }, store, { debug: () => {} })
   const asked = confirmSession('y')
   assert(await officialGuard(guardRequest(asked)) === null, '官方口径（模式 2）应确认后放行')
-  assert(asked.sent[0]?.includes('预计消耗') && asked.sent[0].includes('Anlas'),
-    `官方模式应给 Anlas 估算，实际「${asked.sent[0]}」`)
-  // 模式 1：显式关闭后不再询问（官方/中转都一样）
+  assert(asked.sent[0]?.includes('本地估算') && asked.sent[0].includes('Anlas'),
+    `没有计费接口时应给本地 Anlas 估算，实际「${asked.sent[0]}」`)
+  // 模式 1：显式关闭后不再询问（与端点无关）
   const offChannel = { ...relayChannel, connectorConfig: { ...relayChannel.connectorConfig, confirmBefore: 'off' } }
   const offGuard = createNovelAIConfirmGuard(relayCtx, {
     channels: { getByName: async () => offChannel },
@@ -527,7 +527,7 @@ async function checkChatLayer(baseUrl, token) {
   // 带覆盖参数的查询必须回显「按哪组参数算」，否则用户无法确认覆盖是否生效
   const relaySized = await handleControl({ ctx: relayCtx, text: 'cost 大竖 -t 32', channel: relayChannel, session, services, state: store })
   assert(relaySized?.startsWith('1024×1536 · 步数 32') && relaySized.includes('基础 5 积分/张'),
-    `中转 cost 应带生效尺寸与步数，实际「${relaySized}」`)
+    `cost 应带生效尺寸与步数，实际「${relaySized}」`)
 
   const pausedCtx = {
     http: {
@@ -556,7 +556,7 @@ async function checkChatLayer(baseUrl, token) {
     services,
     state: store
   })
-  assert(downQuery?.includes('未读到站方账户'), `读不到账户时应说明，实际「${downQuery}」`)
+  assert(downQuery?.includes('未提供计费接口'), `读不到计费接口时应说明并退回本地估算，实际「${downQuery}」`)
 
   store.dispose()
   console.log('✓ 聊天指令：Flag 解析 / 比例尺寸 / 参考合并 / set·info·reset·cost·help / 种子护栏')
@@ -578,7 +578,7 @@ async function checkLocalScenarios(baseUrl, token) {
   assert(basicRequest.body.parameters.v4_prompt.caption.base_caption === expectedPrompt, 'v4_prompt 必须携带同一份提示词')
   assert(basicRequest.body.parameters.v4_negative_prompt !== undefined, 'V5 缺少 v4_negative_prompt 会 500，必须发送')
   assert(basicRequest.body.parameters.sm === undefined && basicRequest.body.parameters.sm_dyn === undefined, 'V5 不应发送 sm/sm_dyn')
-  assert(basicRequest.body.parameters.straight_alpha === undefined, '默认不透明，不应发送 straight_alpha（V4 系中转还会直接拒收）')
+  assert(basicRequest.body.parameters.straight_alpha === undefined, '默认不透明，不应发送 straight_alpha（V4 系与兼容端点会直接拒收）')
   assert(basicRequest.body.parameters.ucPresetId === 'heavy' && basicRequest.body.parameters.ucPreset === 0
     && basicRequest.body.parameters.tag_hint_uc_preset === 2, 'UC 预设三套编号应一致（heavy）')
   assert(basicRequest.body.parameters.seed === 12345, `seed 应沿用配置，实际 ${basicRequest.body.parameters.seed}`)
@@ -616,13 +616,14 @@ async function checkLocalScenarios(baseUrl, token) {
   }
   console.log('✓ 透明通道门控（默认关 / 仅 V5 下发）')
 
-  const relay = await runConnector({ ...base, pricing: 'relay' }, [], '1girl')
-  assert(relay.outputs[0].meta.anlas === undefined && relay.outputs[0].meta.pricing === 'relay',
-    `中转口径不应在 meta 里报 Anlas，实际 ${JSON.stringify(relay.outputs[0].meta)}`)
-  const relayLog = NovelAIConnector.getRequestLog({ ...base, pricing: 'relay' }, [], '1girl', {})
-  assert(relayLog.parameters.estimatedAnlas === undefined && relayLog.parameters.pricing === 'relay',
-    `中转口径的请求日志不应含 Anlas 估算，实际 ${JSON.stringify(relayLog.parameters)}`)
-  console.log('✓ 第三方中转口径（不估算 Anlas）')
+  const recorded = await runConnector(base, [], '1girl')
+  const recordedMeta = recorded.outputs[0].meta
+  assert(recordedMeta.endpoint === baseUrl && recordedMeta.pricing === undefined && typeof recordedMeta.anlas === 'number',
+    `结果记录应带端点与服务端 Anlas 估算、不带计费口径，实际 ${JSON.stringify(recordedMeta)}`)
+  const recordedLog = NovelAIConnector.getRequestLog(base, [], '1girl', {})
+  assert(recordedLog.endpoint === baseUrl && typeof recordedLog.parameters.estimatedAnlas === 'number',
+    `请求日志应带端点与本地估算，实际 ${JSON.stringify(recordedLog)}`)
+  console.log('✓ 结果记录只记端点与本地估算（不写死计费口径）')
 
   captured.length = 0
   const vibeError = await runConnector(base, imageFiles, 'cat')
@@ -654,7 +655,7 @@ async function checkLocalScenarios(baseUrl, token) {
   const characterRequest = captured.at(-1)
   const characterParams = characterRequest.body.parameters
   assert(characterParams.params_version === 3, 'V4.5 的 params_version 应为 3')
-  assert(characterParams.straight_alpha === undefined, 'V4 系不应发送 straight_alpha（第三方中转会拒收，实测 400）')
+  assert(characterParams.straight_alpha === undefined, 'V4 系不应发送 straight_alpha（兼容端点会拒收，实测 400）')
   assert(characterParams.director_reference_images.length === 1
     && characterParams.director_reference_strength_values[0] === 0.8
     && characterParams.director_reference_secondary_strength_values[0] === 0.5, '角色参考参数应原样下发')
@@ -767,11 +768,9 @@ async function checkLiveGeneration(baseUrl, token) {
     resolution: options.resolution,
     seed: -1,
     showAnlasCost: true,
-    // 非官方域名按第三方中转口径处理：不报 Anlas 估算
-    pricing: official ? 'novelai' : 'relay'
   }
   if (options.steps) config.steps = Number(options.steps)
-  console.log(`模型 ${options.model} · ${options.resolution}${options.steps ? ` · ${options.steps} 步` : ''} · 计费口径 ${config.pricing}`)
+  console.log(`模型 ${options.model} · ${options.resolution}${options.steps ? ` · ${options.steps} 步` : ''} · 端点 ${official ? '官方' : '兼容'}`)
 
   const result = await runConnector(config, [], options.prompt)
   if (result.error) {
@@ -782,7 +781,7 @@ async function checkLiveGeneration(baseUrl, token) {
   const file = join(outDir, `live-${Date.now()}.png`)
   writeFileSync(file, Buffer.from(String(result.outputs[0].url).split(',')[1], 'base64'))
   console.log(`✓ 真实 API 出图：${file}`)
-  const cost = meta.anlas === undefined ? '按站点积分计费（本地不估算）' : `约 ${meta.anlas} Anlas`
+  const cost = `本地估算 ${meta.anlas} Anlas（真实消耗以端点计费接口为准）`
   console.log(`  模型 ${meta.model} · ${meta.width}x${meta.height} · ${meta.steps} 步 · CFG ${meta.scale} · 种子 ${meta.seed} · ${cost}`)
 }
 

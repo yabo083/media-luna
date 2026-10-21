@@ -13,13 +13,11 @@ import type { ConnectorField, CardDisplayField } from '../../core'
 /** 参考图用途 */
 export type ReferenceMode = 'vibe' | 'character' | 'off'
 
-/** 计费口径：官方按 Anlas 估算；第三方中转按站方积分，本地无法估算 */
-export type PricingMode = 'novelai' | 'relay'
-
 /**
- * 生成前确认策略（与计费口径无关的开关）：
+ * 生成前确认策略：
  * `on` = 模式 1（默认），先估价、回复确认才生成；`off` = 模式 2，直接生成。
- * 估价来源跟随渠道的 `pricing`——官方用本地 Anlas 公式（官方 API 没有询价端点），中转读站方报价与余额。
+ * 估价来源按端点能力决定，与站点无关：官方端点用本地 Anlas 公式，
+ * 其它端点若实现计费扩展端点就读真值，否则只报参数不报价。
  */
 export type ConfirmMode = 'on' | 'off'
 
@@ -60,9 +58,6 @@ export const DEFAULT_MODEL_ID = 'nai-diffusion-5-full'
 
 /** 官方图像接口地址 */
 export const OFFICIAL_API_URL = 'https://image.novelai.net'
-
-/** 配置 1 的第三方中转站点：计费口径选「配置 1」且 API 地址仍是官方默认值时按它处理 */
-export const RELAY_API_URL = 'https://windislands.com'
 
 /** 默认分辨率（官方九档的第一档：小图竖幅） */
 export const DEFAULT_RESOLUTION = '512x768'
@@ -343,25 +338,14 @@ export const connectorFields: ConnectorField[] = [
     required: true,
     default: OFFICIAL_API_URL,
     placeholder: OFFICIAL_API_URL,
-    description: '图像生成端点。/user/* 类接口不在本连接器使用。接入配置选「配置 1」且这里留空或仍是官方默认值时，按 windislands.com 处理'
+    description: '图像生成端点。任何 NovelAI 兼容服务都可以填在这里；若该端点实现 GET /api/connection 与 POST /api/billing，会读取真实余额与整单报价'
   },
   {
     key: 'apiToken',
     label: 'API Token',
     type: 'password',
     required: true,
-    description: '官方填 pst- 开头的 Persistent Token；第三方 NAI 兼容中转填它给的 Key（如 mj_…）。不要在日志或截图里传播'
-  },
-  {
-    key: 'pricing',
-    label: '接入配置',
-    type: 'select',
-    default: 'novelai',
-    options: [
-      { label: '配置 1 · windislands.com（第三方中转：读站方余额与报价）', value: 'relay' },
-      { label: '配置 2 · 官方 NovelAI（image.novelai.net：本地 Anlas 公式估算）', value: 'novelai' }
-    ],
-    description: '配置 1 走第三方中转：API 地址留空或仍是官方默认值时按 https://windislands.com 处理（填了别的地址就用你填的），估价读站方 GET /api/connection 与 POST /api/billing；配置 2 走官方，估价用本地 Anlas 公式（官方 API 没有询价端点）'
+    description: '官方填 pst- 开头的 Persistent Token；兼容端点填它签发的 Key。不要在日志或截图里传播'
   },
   {
     key: 'model',
@@ -387,7 +371,7 @@ export const connectorFields: ConnectorField[] = [
     label: '透明通道',
     type: 'boolean',
     default: false,
-    description: '仅 V5 系（Full / Medium / Curated）支持：出图为透明背景 PNG。V4 系（含第三方中转）不收该字段，选了也不会下发；聊天里可用「透明 / 不透明」临时切换'
+    description: '仅 V5 系（Full / Medium / Curated）支持：出图为透明背景 PNG。V4 系模型不收该字段，选了也不会下发；聊天里可用「透明 / 不透明」临时切换'
   },
   {
     key: 'confirmBefore',
@@ -398,7 +382,7 @@ export const connectorFields: ConnectorField[] = [
       { label: '模式 1 · 先估价再确认（回复「确认」/「y」才出图）', value: 'on' },
       { label: '模式 2 · 直接生成（出图后只报消耗）', value: 'off' }
     ],
-    description: '模式 1 会在出图前先回一条估价并等 60 秒：官方渠道用本地 Anlas 公式（官方 API 没有询价端点），第三方中转读站方报价与余额；回复其它内容或超时视为放弃、不消耗。确认只拦聊天命令，WebUI 与控制台不受影响，会话不支持等待回复时直接放行'
+    description: '模式 1 会在出图前先回一条估价并等 60 秒：官方端点用本地 Anlas 公式（官方 API 没有询价端点），实现了计费扩展端点的兼容服务读真实报价与余额，其它端点只回参数不报价；回复其它内容或超时视为放弃、不消耗。确认只拦聊天命令，WebUI 与控制台不受影响，会话不支持等待回复时直接放行'
   },
   {
     key: 'customSize',
