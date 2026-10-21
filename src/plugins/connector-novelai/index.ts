@@ -45,8 +45,9 @@ export default definePlugin({
 
   async onLoad(pluginCtx: PluginContext) {
     const state = pluginCtx.getService<NovelAIChatState>('novelai-chat')
-    // 主服务按上游既有写法从 Koishi context 取（不依赖 loader 的服务注册表扩展）
-    const mediaLuna = pluginCtx.ctx.mediaLuna as ControlServices | undefined
+    // 主服务走 loader 的服务注册表：直接读 ctx.mediaLuna 会触发 cordis 的
+    // "property mediaLuna is not registered, declare it as inject" 警告
+    const mediaLuna = pluginCtx.getService<ControlServices>('mediaLuna')
     if (state && mediaLuna) {
       // 监听器挂在根上下文，重载时会先 dispose 再 onLoad，所以必须回收
       disposeControl = registerNovelAIChatControl(pluginCtx.ctx, mediaLuna, state, pluginCtx.logger)
