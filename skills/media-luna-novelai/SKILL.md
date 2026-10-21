@@ -102,7 +102,7 @@ y                       → 正在生成中… → 出图 + 消耗回执
 **估价来源跟随接入配置**：
 
 - **官方**：本地 Anlas 公式（面积 × 步数 + 参考附加，含 Opus 免费带）。官方 API **没有询价端点**——`/ai/*`、`/user/*`、`/oa/v1/*` 全查过，只有 `/ai/upscale` 的 `402 Not enough Anlas` 是扣费/拒绝信号；官方网页的「预计消耗」同样是客户端算的。
-- **配置 1（windislands.com）**：`POST /api/billing` 的整单价（站长已对 Key 开放，自动启用；响应含 `cost/unitCost/totalCost/count/restrictedEligible/quoteToken`，参考图附加费按站方规则计入）+ `GET /api/connection` 的余额/基础价。报价拿不到时降级为「基础 N 积分/张 · 参考图附加费按站方结算」——**不自行推算**（原先的氛围编码报价与同形状实测兜底都已删除）。
+- **配置 1（windislands.com）**：`POST /api/billing` 的整单价（站点已对 Key 全量开放；响应含 `cost/unitCost/totalCost/count/restrictedEligible/quoteToken`）+ `GET /api/connection` 的余额/基础价。已实测能报价的形状：纯文生图、氛围参考 1–3 张、角色参考 **1 张**、批量、透明、大图、不同步数；**角色参考 >1 张仍被拒**（`400 报价参数无效`），此时降级为「基础 N 积分/张 · 参考图附加费按站方结算」——**不自行推算**。
 - 生成后的回执 `消耗 N 积分 · 余 M 积分` 才是真实结算（基础价与实际可以差很多，实测 V4.5 + 1 张精准参考 = 14 积分）。
 
 ### 选项位置（已用 Koishi 解析器实测）
